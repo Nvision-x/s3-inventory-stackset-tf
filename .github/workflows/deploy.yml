@@ -1,0 +1,170 @@
+name: 'Deploy S3 Inventory (Plan + Apply)'
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  discover:
+    name: 'Discover Accounts'
+    runs-on: ubuntu-latest
+    outputs:
+      configs: ${{ steps.scan.outputs.configs }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Scan accounts config
+        id: scan
+        shell: bash
+        run: |
+          echo "Reading accounts from accounts.json"
+          if [ ! -f accounts.json ]; then
+            echo "accounts.json not found"
+            exit 1
+          fi
+
+          RAW=$(cat accounts.json)
+          ACCOUNTS=$(echo "$RAW" | jq -c 'if has("accounts") then .accounts else . end')
+
+          echo "$ACCOUNTS" | jq -e 'if type=="array" then . else empty end' > /dev/null \
+            || { echo "accounts.json must be an array or have an 'accounts' array"; exit 1; }
+
+          total=$(echo "$ACCOUNTS" | jq 'length')
+          echo "Total accounts found: $total"
+          echo "$ACCOUNTS" | jq -r '.[] | "  \(.account_id) (OIDC Role: \(.oidc_role))"'
+
+          echo "configs=$(echo "$ACCOUNTS" | jq -c '.')" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: 'Deploy to ${{ matrix.config.account_id }}'
+    needs: discover
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        config: ${{ fromJson(needs.discover.outputs.configs) }}
+      max-parallel: 5
+      fail-fast: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ matrix.config.account_id }}:role/${{ matrix.config.oidc_role }}
+          role-session-name: GitHubActions-S3Inventory-Apply
+          aws-region: ${{ matrix.config.aws_region || 'us-east-1' }}
+
+      - name: Verify AWS access
+        shell: bash
+        run: |
+          echo "Authenticated to account ${{ matrix.config.account_id }}"
+          aws sts get-caller-identity
+
+      - name: Generate backend config and overrides
+        id: generate-configs
+        shell: bash
+        run: |
+          CONFIG='${{ toJson(matrix.config) }}'
+
+          backend_file="backend-${{ matrix.config.account_id }}.tfbackend"
+
+          # Render backend config
+          echo "$CONFIG" | jq -r '
+            .terraform_backend
+            | to_entries[]
+            | if (.value | type) == "string"
+              then "\(.key) = \"\(.value)\""
+              else "\(.key) = \(.value)"
+              end
+          ' > "$backend_file"
+
+          echo "Generated backend config:"
+          cat "$backend_file"
+
+          # Generate overrides as auto.tfvars.json if present
+          overrides=$(echo "$CONFIG" | jq -c '.overrides // {}')
+          if [ "$overrides" != "{}" ]; then
+            echo "$overrides" | jq '.' > overrides.auto.tfvars.json
+            echo "Generated overrides:"
+            cat overrides.auto.tfvars.json
+          fi
+
+          # Pass aws_region as TF var if set in account config
+          aws_region=$(echo "$CONFIG" | jq -r '.aws_region // empty')
+          if [ -n "$aws_region" ]; then
+            echo "{\"aws_region\": \"$aws_region\"}" | jq -s '.[0] * (input // {})' - <(cat overrides.auto.tfvars.json 2>/dev/null || echo '{}') > overrides.auto.tfvars.json
+            echo "Added aws_region override:"
+            cat overrides.auto.tfvars.json
+          fi
+
+          echo "backend_file=$backend_file" >> "$GITHUB_OUTPUT"
+
+      - name: Initialize Terraform
+        shell: bash
+        run: |
+          terraform init -backend-config="${{ steps.generate-configs.outputs.backend_file }}" -reconfigure
+
+      - name: Terraform Plan
+        shell: bash
+        run: |
+          terraform plan -out=tfplan
+
+      - name: Terraform Apply
+        shell: bash
+        run: |
+          terraform apply -auto-approve tfplan
+
+      - name: Upload outputs
+        if: always()
+        shell: bash
+        run: |
+          terraform output -json > outputs-${{ matrix.config.account_id }}.json 2>/dev/null || echo '{}' > outputs-${{ matrix.config.account_id }}.json
+          echo "Completed deployment for account ${{ matrix.config.account_id }}"
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: outputs-${{ matrix.config.account_id }}
+          path: outputs-${{ matrix.config.account_id }}.json
+
+  summary:
+    name: 'Summary'
+    needs: [discover, deploy]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Generate summary
+        shell: bash
+        run: |
+          echo "# S3 Inventory Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          configs='${{ needs.discover.outputs.configs }}'
+          total=$(echo "$configs" | jq '. | length')
+
+          echo "**Total Accounts:** $total" >> $GITHUB_STEP_SUMMARY
+          echo "**Mode:** Plan + Apply (Deployed)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "## Deployed Accounts" >> $GITHUB_STEP_SUMMARY
+          echo "$configs" | jq -r '.[] | "- \(.account_id) (Role: \(.oidc_role))"' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "## Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "- Lambda will discover buckets on first scheduled run" >> $GITHUB_STEP_SUMMARY
+          echo "- Inventory reports will appear within 24-48 hours" >> $GITHUB_STEP_SUMMARY
+          echo "- Check CloudWatch logs for SUMMARY line with success/failed/skipped counts" >> $GITHUB_STEP_SUMMARY

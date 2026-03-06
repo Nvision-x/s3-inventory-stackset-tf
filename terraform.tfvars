@@ -1,0 +1,7 @@
+collector_bucket_prefix  = "nvisionx-s3-inventory"
+collector_account_id     = "022787320932"
+inventory_name           = "terra-s3-inv"
+output_format            = "Parquet"
+schedule_frequency       = "Daily"
+exclude_bucket_prefixes  = "aws-,cdk-,cf-templates-"
+exclude_bucket_tag       = "SkipInventory"
