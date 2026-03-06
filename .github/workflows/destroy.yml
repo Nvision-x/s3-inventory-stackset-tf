@@ -1,0 +1,167 @@
+name: 'Destroy S3 Inventory'
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type DESTROY to confirm'
+        required: true
+        type: string
+      account_filter:
+        description: 'Account ID to destroy (leave empty for ALL accounts)'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  validate:
+    name: 'Validate Confirmation'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check confirmation
+        if: ${{ github.event.inputs.confirm != 'DESTROY' }}
+        run: |
+          echo "You must type DESTROY to confirm. Got: '${{ github.event.inputs.confirm }}'"
+          exit 1
+
+  discover:
+    name: 'Discover Accounts'
+    needs: validate
+    runs-on: ubuntu-latest
+    outputs:
+      configs: ${{ steps.scan.outputs.configs }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Scan accounts config
+        id: scan
+        shell: bash
+        run: |
+          echo "Reading accounts from accounts.json"
+          if [ ! -f accounts.json ]; then
+            echo "accounts.json not found"
+            exit 1
+          fi
+
+          RAW=$(cat accounts.json)
+          ACCOUNTS=$(echo "$RAW" | jq -c 'if has("accounts") then .accounts else . end')
+
+          # Filter to specific account if provided
+          FILTER="${{ github.event.inputs.account_filter }}"
+          if [ -n "$FILTER" ]; then
+            ACCOUNTS=$(echo "$ACCOUNTS" | jq -c --arg id "$FILTER" '[.[] | select(.account_id == $id)]')
+            total=$(echo "$ACCOUNTS" | jq 'length')
+            if [ "$total" -eq 0 ]; then
+              echo "Account $FILTER not found in accounts.json"
+              exit 1
+            fi
+            echo "Filtered to account: $FILTER"
+          fi
+
+          total=$(echo "$ACCOUNTS" | jq 'length')
+          echo "Accounts to destroy: $total"
+          echo "$ACCOUNTS" | jq -r '.[] | "  \(.account_id) (OIDC Role: \(.oidc_role))"'
+
+          echo "configs=$(echo "$ACCOUNTS" | jq -c '.')" >> "$GITHUB_OUTPUT"
+
+  destroy:
+    name: 'Destroy in ${{ matrix.config.account_id }}'
+    needs: discover
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        config: ${{ fromJson(needs.discover.outputs.configs) }}
+      max-parallel: 5
+      fail-fast: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ matrix.config.account_id }}:role/${{ matrix.config.oidc_role }}
+          role-session-name: GitHubActions-S3Inventory-Destroy
+          aws-region: ${{ matrix.config.aws_region || 'us-east-1' }}
+
+      - name: Verify AWS access
+        shell: bash
+        run: |
+          echo "Authenticated to account ${{ matrix.config.account_id }}"
+          aws sts get-caller-identity
+
+      - name: Generate backend config and overrides
+        id: generate-configs
+        shell: bash
+        run: |
+          CONFIG='${{ toJson(matrix.config) }}'
+
+          backend_file="backend-${{ matrix.config.account_id }}.tfbackend"
+
+          echo "$CONFIG" | jq -r '
+            .terraform_backend
+            | to_entries[]
+            | if (.value | type) == "string"
+              then "\(.key) = \"\(.value)\""
+              else "\(.key) = \(.value)"
+              end
+          ' > "$backend_file"
+
+          echo "Generated backend config:"
+          cat "$backend_file"
+
+          aws_region=$(echo "$CONFIG" | jq -r '.aws_region // ""')
+          echo "$CONFIG" | jq --arg r "$aws_region" '
+            (.overrides // {}) +
+            (if $r != "" then {"aws_region": $r} else {} end)
+          ' > overrides.auto.tfvars.json
+
+          echo "backend_file=$backend_file" >> "$GITHUB_OUTPUT"
+
+      - name: Initialize Terraform
+        shell: bash
+        run: |
+          terraform init -backend-config="${{ steps.generate-configs.outputs.backend_file }}" -reconfigure
+
+      - name: Terraform Plan Destroy
+        shell: bash
+        run: |
+          terraform plan -destroy -out=tfplan
+
+      - name: Terraform Destroy
+        shell: bash
+        run: |
+          terraform apply -auto-approve tfplan
+
+  summary:
+    name: 'Summary'
+    needs: [discover, destroy]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Generate summary
+        shell: bash
+        run: |
+          echo "# S3 Inventory Destroy Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          configs='${{ needs.discover.outputs.configs }}'
+          total=$(echo "$configs" | jq '. | length')
+
+          echo "**Total Accounts:** $total" >> $GITHUB_STEP_SUMMARY
+          echo "**Mode:** DESTROY" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "## Destroyed Accounts" >> $GITHUB_STEP_SUMMARY
+          echo "$configs" | jq -r '.[] | "- \(.account_id) (Role: \(.oidc_role))"' >> $GITHUB_STEP_SUMMARY
