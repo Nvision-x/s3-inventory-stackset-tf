@@ -38,7 +38,7 @@ ALL_OPTIONAL_FIELDS = [
     'ChecksumAlgorithm',
     'ObjectAccessControlList',
     'ObjectOwner',
-    'ExpirationDate',
+    'LifecycleExpirationDate',
 ]
 
 
