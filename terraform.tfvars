@@ -1,5 +1,5 @@
 collector_bucket_prefix  = "nvisionx-s3-inventory"
-collector_account_id     = "022787320932"
+collector_account_id     = "000000000000"
 inventory_name           = "terra-s3-inv"
 output_format            = "Parquet"
 schedule_frequency       = "Daily"
