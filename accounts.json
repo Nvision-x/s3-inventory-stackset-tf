@@ -1,20 +1,17 @@
 {
   "accounts": [
     {
-      "account_id": "022787320932",
+      "account_id": "111111111111",
       "oidc_role": "NxGitHubActionsRole",
       "aws_region": "us-east-1",
       "terraform_backend": {
-        "bucket": "tfstate-integration-nx",
+        "bucket": "your-tf-state-bucket",
         "key": "s3-inventory-stackset/terraform.tfstate",
         "region": "us-east-1",
         "encrypt": true,
         "use_lockfile": true
       },
-      "overrides": {
-        "test_mode": "true",
-        "test_bucket_name": "nvisionx-s3-inventory-us-east-1"
-      }
+      "overrides": {}
     }
   ]
 }

@@ -1,18 +1,36 @@
-name: 'S3 Inventory (Plan Only)'
+name: 'Destroy S3 Inventory'
 
 on:
-  pull_request:
-    branches:
-      - main
   workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type DESTROY to confirm'
+        required: true
+        type: string
+      account_filter:
+        description: 'Account ID to destroy (leave empty for ALL accounts)'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   id-token: write
   contents: read
 
 jobs:
+  validate:
+    name: 'Validate Confirmation'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check confirmation
+        if: ${{ github.event.inputs.confirm != 'DESTROY' }}
+        run: |
+          echo "You must type DESTROY to confirm. Got: '${{ github.event.inputs.confirm }}'"
+          exit 1
+
   discover:
     name: 'Discover Accounts'
+    needs: validate
     runs-on: ubuntu-latest
     outputs:
       configs: ${{ steps.scan.outputs.configs }}
@@ -34,17 +52,26 @@ jobs:
           RAW=$(cat accounts.json)
           ACCOUNTS=$(echo "$RAW" | jq -c 'if has("accounts") then .accounts else . end')
 
-          echo "$ACCOUNTS" | jq -e 'if type=="array" then . else empty end' > /dev/null \
-            || { echo "accounts.json must be an array or have an 'accounts' array"; exit 1; }
+          # Filter to specific account if provided
+          FILTER="${{ github.event.inputs.account_filter }}"
+          if [ -n "$FILTER" ]; then
+            ACCOUNTS=$(echo "$ACCOUNTS" | jq -c --arg id "$FILTER" '[.[] | select(.account_id == $id)]')
+            total=$(echo "$ACCOUNTS" | jq 'length')
+            if [ "$total" -eq 0 ]; then
+              echo "Account $FILTER not found in accounts.json"
+              exit 1
+            fi
+            echo "Filtered to account: $FILTER"
+          fi
 
           total=$(echo "$ACCOUNTS" | jq 'length')
-          echo "Total accounts found: $total"
+          echo "Accounts to destroy: $total"
           echo "$ACCOUNTS" | jq -r '.[] | "  \(.account_id) (OIDC Role: \(.oidc_role))"'
 
           echo "configs=$(echo "$ACCOUNTS" | jq -c '.')" >> "$GITHUB_OUTPUT"
 
-  plan:
-    name: 'Plan for ${{ matrix.config.account_id }}'
+  destroy:
+    name: 'Destroy in ${{ matrix.config.account_id }}'
     needs: discover
     runs-on: ubuntu-latest
     strategy:
@@ -64,7 +91,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::${{ matrix.config.account_id }}:role/${{ matrix.config.oidc_role }}
-          role-session-name: GitHubActions-S3Inventory-Plan
+          role-session-name: GitHubActions-S3Inventory-Destroy
           aws-region: ${{ matrix.config.aws_region || 'us-east-1' }}
 
       - name: Verify AWS access
@@ -81,7 +108,6 @@ jobs:
 
           backend_file="backend-${{ matrix.config.account_id }}.tfbackend"
 
-          # Render backend config
           echo "$CONFIG" | jq -r '
             .terraform_backend
             | to_entries[]
@@ -94,15 +120,11 @@ jobs:
           echo "Generated backend config:"
           cat "$backend_file"
 
-          # Build overrides.auto.tfvars.json from overrides + aws_region
           aws_region=$(echo "$CONFIG" | jq -r '.aws_region // ""')
           echo "$CONFIG" | jq --arg r "$aws_region" '
             (.overrides // {}) +
             (if $r != "" then {"aws_region": $r} else {} end)
           ' > overrides.auto.tfvars.json
-
-          echo "Generated overrides:"
-          cat overrides.auto.tfvars.json
 
           echo "backend_file=$backend_file" >> "$GITHUB_OUTPUT"
 
@@ -111,14 +133,19 @@ jobs:
         run: |
           terraform init -backend-config="${{ steps.generate-configs.outputs.backend_file }}" -reconfigure
 
-      - name: Terraform Plan
+      - name: Terraform Plan Destroy
         shell: bash
         run: |
-          terraform plan
+          terraform plan -destroy -out=tfplan
+
+      - name: Terraform Destroy
+        shell: bash
+        run: |
+          terraform apply -auto-approve tfplan
 
   summary:
     name: 'Summary'
-    needs: [discover, plan]
+    needs: [discover, destroy]
     runs-on: ubuntu-latest
     if: always()
 
@@ -126,15 +153,15 @@ jobs:
       - name: Generate summary
         shell: bash
         run: |
-          echo "# S3 Inventory Plan Summary" >> $GITHUB_STEP_SUMMARY
+          echo "# S3 Inventory Destroy Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           configs='${{ needs.discover.outputs.configs }}'
           total=$(echo "$configs" | jq '. | length')
 
           echo "**Total Accounts:** $total" >> $GITHUB_STEP_SUMMARY
-          echo "**Mode:** Plan Only (PR)" >> $GITHUB_STEP_SUMMARY
+          echo "**Mode:** DESTROY" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          echo "## Planned Accounts" >> $GITHUB_STEP_SUMMARY
+          echo "## Destroyed Accounts" >> $GITHUB_STEP_SUMMARY
           echo "$configs" | jq -r '.[] | "- \(.account_id) (Role: \(.oidc_role))"' >> $GITHUB_STEP_SUMMARY

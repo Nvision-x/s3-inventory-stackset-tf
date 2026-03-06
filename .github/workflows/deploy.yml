@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 permissions:
   id-token: write
@@ -93,21 +94,15 @@ jobs:
           echo "Generated backend config:"
           cat "$backend_file"
 
-          # Generate overrides as auto.tfvars.json if present
-          overrides=$(echo "$CONFIG" | jq -c '.overrides // {}')
-          if [ "$overrides" != "{}" ]; then
-            echo "$overrides" | jq '.' > overrides.auto.tfvars.json
-            echo "Generated overrides:"
-            cat overrides.auto.tfvars.json
-          fi
+          # Build overrides.auto.tfvars.json from overrides + aws_region
+          aws_region=$(echo "$CONFIG" | jq -r '.aws_region // ""')
+          echo "$CONFIG" | jq --arg r "$aws_region" '
+            (.overrides // {}) +
+            (if $r != "" then {"aws_region": $r} else {} end)
+          ' > overrides.auto.tfvars.json
 
-          # Pass aws_region as TF var if set in account config
-          aws_region=$(echo "$CONFIG" | jq -r '.aws_region // empty')
-          if [ -n "$aws_region" ]; then
-            echo "{\"aws_region\": \"$aws_region\"}" | jq -s '.[0] * (input // {})' - <(cat overrides.auto.tfvars.json 2>/dev/null || echo '{}') > overrides.auto.tfvars.json
-            echo "Added aws_region override:"
-            cat overrides.auto.tfvars.json
-          fi
+          echo "Generated overrides:"
+          cat overrides.auto.tfvars.json
 
           echo "backend_file=$backend_file" >> "$GITHUB_OUTPUT"
 
