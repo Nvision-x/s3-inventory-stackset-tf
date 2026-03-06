@@ -169,6 +169,31 @@ All available S3 inventory fields are included in the configuration:
 
 `Size`, `LastModifiedDate`, `StorageClass`, `ETag`, `IsMultipartUploaded`, `ReplicationStatus`, `EncryptionStatus`, `ObjectLockRetainUntilDate`, `ObjectLockMode`, `ObjectLockLegalHoldStatus`, `IntelligentTieringAccessTier`, `BucketKeyStatus`, `ChecksumAlgorithm`, `ObjectAccessControlList`, `ObjectOwner`, `LifecycleExpirationDate`
 
+## Usage with AWS Control Tower AFT
+
+If you're using [Account Factory for Terraform (AFT)](https://docs.aws.amazon.com/controltower/latest/userguide/aft-overview.html), you can reference the `per-account` module directly in your account customizations:
+
+```hcl
+module "s3_inventory" {
+  source = "git::https://github.com/Nvision-x/s3-inventory-stackset-tf.git//modules/per-account?ref=main"
+
+  collector_bucket_prefix  = "nvisionx-s3-inventory"
+  collector_account_id     = "000000000000"
+  inventory_name           = "terra-s3-inv"
+  output_format            = "Parquet"
+  schedule_frequency       = "Daily"
+  included_object_versions = "All"
+  exclude_bucket_prefixes  = "aws-,cdk-,cf-templates-"
+  exclude_bucket_tag       = "SkipInventory"
+
+  tags = {
+    ManagedBy = "AFT"
+  }
+}
+```
+
+AFT will automatically apply this to each enrolled account. No `accounts.json` or GitHub Actions workflows needed — AFT handles the per-account orchestration.
+
 ## Migration from CloudFormation StackSet
 
 Resources are named identically between CFN and Terraform, so you have two migration paths:
