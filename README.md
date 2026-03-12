@@ -194,23 +194,29 @@ module "s3_inventory" {
 
 AFT will automatically apply this to each enrolled account. No `accounts.json` or GitHub Actions workflows needed — AFT handles the per-account orchestration.
 
-## Migration from CloudFormation StackSet
+## Versioning
 
-Resources are named identically between CFN and Terraform, so you have two migration paths:
+This repo uses [CalVer](https://calver.org/) (`vYYYY.MM.DD-BUILD`). A new release is created automatically on every push to `main`.
 
-**Option A — Clean deploy:** Delete the CFN stack instance first, then deploy Terraform.
+### Using the submodule at a pinned version
 
-**Option B — Import existing resources:**
+Customers can reference the `per-account` submodule directly from this repo at a specific CalVer tag:
 
-```bash
-terraform import 'module.s3_inventory_per_account.aws_lambda_function.s3_inventory' s3-inventory-config
-terraform import 'module.s3_inventory_per_account.aws_iam_role.lambda_role' s3-inventory-config-lambda-role-us-east-1
-terraform import 'module.s3_inventory_per_account.aws_cloudwatch_log_group.lambda_logs' /aws/lambda/s3-inventory-config
-terraform import 'module.s3_inventory_per_account.aws_cloudwatch_event_rule.scheduled' s3-inventory-daily-trigger
-terraform import 'module.s3_inventory_per_account.aws_cloudwatch_event_rule.create_bucket' s3-inventory-new-bucket-trigger
+```hcl
+module "s3_inventory" {
+  source = "git::https://github.com/Nvision-x/s3-inventory-stackset-tf.git//modules/per-account?ref=v2026.03.12-1"
+
+  collector_bucket_prefix  = "nvisionx-s3-inventory"
+  collector_account_id     = "022787320932"
+  inventory_name           = "terra-s3-inv"
+  output_format            = "Parquet"
+  schedule_frequency       = "Daily"
+  exclude_bucket_prefixes  = "aws-,cdk-,cf-templates-"
+  exclude_bucket_tag       = "SkipInventory"
+}
 ```
 
-Both approaches can coexist temporarily — `PutInventoryConfiguration` is idempotent.
+To upgrade, change the `ref=` tag to the desired release version. Available releases: [github.com/Nvision-x/s3-inventory-stackset-tf/releases](https://github.com/Nvision-x/s3-inventory-stackset-tf/releases)
 
 ## Project Structure
 
@@ -231,7 +237,8 @@ s3-inventory-stackset-tf/
 ├── .github/
 │   └── workflows/
 │       ├── deploy.yml           # Push to main or manual → plan + apply
-│       └── plan.yml             # PR or manual → plan only
+│       ├── plan.yml             # PR or manual → plan only
+│       └── release.yml          # CalVer release on push to main
 ├── .gitignore
 └── README.md
 ```
