@@ -169,24 +169,6 @@ All available S3 inventory fields are included in the configuration:
 
 `Size`, `LastModifiedDate`, `StorageClass`, `ETag`, `IsMultipartUploaded`, `ReplicationStatus`, `EncryptionStatus`, `ObjectLockRetainUntilDate`, `ObjectLockMode`, `ObjectLockLegalHoldStatus`, `IntelligentTieringAccessTier`, `BucketKeyStatus`, `ChecksumAlgorithm`, `ObjectAccessControlList`, `ObjectOwner`, `LifecycleExpirationDate`
 
-## Migration from CloudFormation StackSet
-
-Resources are named identically between CFN and Terraform, so you have two migration paths:
-
-**Option A — Clean deploy:** Delete the CFN stack instance first, then deploy Terraform.
-
-**Option B — Import existing resources:**
-
-```bash
-terraform import 'module.s3_inventory_per_account.aws_lambda_function.s3_inventory' s3-inventory-config
-terraform import 'module.s3_inventory_per_account.aws_iam_role.lambda_role' s3-inventory-config-lambda-role-us-east-1
-terraform import 'module.s3_inventory_per_account.aws_cloudwatch_log_group.lambda_logs' /aws/lambda/s3-inventory-config
-terraform import 'module.s3_inventory_per_account.aws_cloudwatch_event_rule.scheduled' s3-inventory-daily-trigger
-terraform import 'module.s3_inventory_per_account.aws_cloudwatch_event_rule.create_bucket' s3-inventory-new-bucket-trigger
-```
-
-Both approaches can coexist temporarily — `PutInventoryConfiguration` is idempotent.
-
 ## Versioning
 
 This repo uses [CalVer](https://calver.org/) (`vYYYY.MM.DD-BUILD`). A new release is created automatically on every push to `main`.
