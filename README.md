@@ -187,6 +187,30 @@ terraform import 'module.s3_inventory_per_account.aws_cloudwatch_event_rule.crea
 
 Both approaches can coexist temporarily — `PutInventoryConfiguration` is idempotent.
 
+## Versioning
+
+This repo uses [CalVer](https://calver.org/) (`vYYYY.MM.DD-BUILD`). A new release is created automatically on every push to `main`.
+
+### Using the submodule at a pinned version
+
+Customers can reference the `per-account` submodule directly from this repo at a specific CalVer tag:
+
+```hcl
+module "s3_inventory" {
+  source = "git::https://github.com/Nvision-x/s3-inventory-stackset-tf.git//modules/per-account?ref=v2026.03.12-1"
+
+  collector_bucket_prefix  = "nvisionx-s3-inventory"
+  collector_account_id     = "022787320932"
+  inventory_name           = "terra-s3-inv"
+  output_format            = "Parquet"
+  schedule_frequency       = "Daily"
+  exclude_bucket_prefixes  = "aws-,cdk-,cf-templates-"
+  exclude_bucket_tag       = "SkipInventory"
+}
+```
+
+To upgrade, change the `ref=` tag to the desired release version. Available releases: [github.com/Nvision-x/s3-inventory-stackset-tf/releases](https://github.com/Nvision-x/s3-inventory-stackset-tf/releases)
+
 ## Project Structure
 
 ```
@@ -206,7 +230,8 @@ s3-inventory-stackset-tf/
 ├── .github/
 │   └── workflows/
 │       ├── deploy.yml           # Push to main or manual → plan + apply
-│       └── plan.yml             # PR or manual → plan only
+│       ├── plan.yml             # PR or manual → plan only
+│       └── release.yml          # CalVer release on push to main
 ├── .gitignore
 └── README.md
 ```
